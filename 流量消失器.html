@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>流量消耗器</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .control-group {
+            margin: 15px 0;
+        }
+        label {
+            display: inline-block;
+            width: 140px;
+            vertical-align: top;
+        }
+        #status {
+            color: red;
+            font-weight: bold;
+            margin: 10px 0;
+            min-height: 24px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        input[type="number"], input[type="text"] {
+            padding: 5px;
+            border: 1px solid #ddd;
+        }
+        #targetUrl {
+            width: 400px;
+        }
+        .error-msg {
+            color: red;
+            margin-left: 10px;
+            font-size: 14px;
+        }
+        .stats {
+            margin: 15px 0;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h2>流量消耗器</h2>
+
+    <div class="control-group">
+        <label>目标文件 URL：</label>
+        <input type="text" id="targetUrl" 
+               placeholder="请输入 URL"
+               value="https://speed.cloudflare.com/__down?bytes=104857600">
+        <span id="errorMsg" class="error-msg"></span>
+    </div>
+
+    <div class="control-group">
+        <label>并发数 (1-32)：</label>
+        <input type="number" id="threadCount" min="1" max="32" value="4" oninput="validateThreadCount()">
+    </div>
+
+    <div>
+        <button onclick="start()">开始消耗</button>
+        <button onclick="stop()">停止</button>
+    </div>
+
+    <div class="stats">
+        <div id="status">状态: 等待中</div>
+        <div>总共已消耗流量: <span id="totalCounter">0 B</span></div>
+        <div>本次已消耗流量: <span id="counter">0 B</span></div>
+        <div>每秒实时流量: <span id="speed">0 B/s</span></div>
+        <div>已运行时长: <span id="runtime">00:00</span></div>
+    </div>
+
+    <script>
+        let isRunning = false;
+        let totalBytes = 0;
+        let globalBytes = 0;
+        let speedTracker = 0;
+        let lastUpdate = Date.now();
+        let startTime = null;
+        let controller = new AbortController();
+
+        function formatBytes(bytes) {
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            if (bytes === 0) return '0 B';
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${units[i]}`;
+        }
+
+        function updateRuntime() {
+            if (!isRunning) return;
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const minutes = String(Math.floor(elapsed / 60)).padStart(2, '0');
+            const seconds = String(elapsed % 60).padStart(2, '0');
+            document.getElementById('runtime').textContent = `${minutes}:${seconds}`;
+            setTimeout(updateRuntime, 1000);
+        }
+
+        function showError(msg) {
+            const errorMsg = document.getElementById('errorMsg');
+            errorMsg.textContent = msg;
+            setTimeout(() => errorMsg.textContent = '', 5000);
+        }
+
+        function validateThreadCount() {
+            let input = document.getElementById('threadCount');
+            let value = parseInt(input.value, 10);
+            if (isNaN(value) || value < 1) {
+                input.value = 1;
+            } else if (value > 32) {
+                input.value = 32;
+            }
+        }
+
+        setInterval(() => {
+            if (!isRunning) return;
+            const elapsed = (Date.now() - lastUpdate) / 1000;
+            if (elapsed > 0) {
+                document.getElementById('speed').textContent = `${formatBytes(speedTracker / elapsed)}/s`;
+                speedTracker = 0;  
+                lastUpdate = Date.now(); 
+            }
+        }, 1000);
+
+        async function consume() {
+            if (!isRunning) return;
+            const targetUrl = document.getElementById('targetUrl').value;
+            if (!targetUrl.startsWith('http')) {
+                showError("URL 格式错误");
+                stop();
+                return;
+            }
+
+            try {
+                const response = await fetch(targetUrl, { signal: controller.signal });
+                if (!response.body) throw new Error("流数据不可用");
+
+                const reader = response.body.getReader();
+                while (isRunning) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    totalBytes += value.length;
+                    globalBytes += value.length;
+                    speedTracker += value.length;
+
+                    document.getElementById('counter').textContent = formatBytes(totalBytes);
+                    document.getElementById('totalCounter').textContent = formatBytes(globalBytes);
+                }
+                
+                await reader.cancel();
+            } catch (e) {
+                if (e.name === 'AbortError') return;
+                showError(`错误: ${e.message}`);
+                stop();
+            }
+        }
+
+        function start() {
+            if (isRunning) return;
+            isRunning = true;
+            controller = new AbortController();
+            document.getElementById('status').textContent = "运行中...";
+            totalBytes = 0;
+            speedTracker = 0;
+            startTime = Date.now();
+            document.getElementById('counter').textContent = "0 B";
+            document.getElementById('runtime').textContent = "00:00";
+
+            updateRuntime();
+
+            let threadCount = parseInt(document.getElementById('threadCount').value, 10);
+            threadCount = Math.min(32, Math.max(1, threadCount));
+
+            Array.from({ length: threadCount }, () => consumeLoop());
+        }
+
+        async function consumeLoop() {
+            while (isRunning) {
+                await Promise.all(Array.from({ length: 4 }, consume));
+                await new Promise(r => setTimeout(r, 500));
+            }
+        }
+
+        function stop() {
+            if (!isRunning) return;
+            isRunning = false;
+            controller.abort();
+            document.getElementById('status').textContent = "已停止";
+        }
+
+        window.addEventListener('beforeunload', (e) => {
+            if (isRunning) {
+                e.preventDefault();
+                e.returnValue = '';
+                stop();
+            }
+        });
+    </script>
+    
+    <div style="margin-top: 30px; padding: 15px; background: #fff3cd; border-radius: 4px;">
+        <strong>注意：</strong>
+        <ul>
+           <li>推荐测试URL：<code>https://speed.cloudflare.com/__down?bytes=104857600</code></li>
+            <li>并发数建议值：4-32</li>
+        </ul>
+        <p style="color: #dc3545;">⚠️ 并发数过高可能会占用大量带宽</p>
+    </div>
+</body>
+</html>
