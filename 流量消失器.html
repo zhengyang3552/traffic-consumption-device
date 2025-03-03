@@ -89,17 +89,26 @@
     <script>
         let isRunning = false;
         let totalBytes = 0;
-        let globalBytes = 0;
+        let globalBytes = parseInt(localStorage.getItem('globalBytes')) || 0;
         let speedTracker = 0;
         let lastUpdate = Date.now();
         let startTime = null;
         let controller = new AbortController();
+
+
+        document.getElementById('totalCounter').textContent = formatBytes(globalBytes);
 
         function formatBytes(bytes) {
             const units = ['B', 'KB', 'MB', 'GB', 'TB'];
             if (bytes === 0) return '0 B';
             const i = Math.floor(Math.log(bytes) / Math.log(1024));
             return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${units[i]}`;
+        }
+
+        function updateGlobalBytes(value) {
+            globalBytes += value;
+            localStorage.setItem('globalBytes', globalBytes.toString());
+            document.getElementById('totalCounter').textContent = formatBytes(globalBytes);
         }
 
         function updateRuntime() {
@@ -156,11 +165,10 @@
                     if (done) break;
 
                     totalBytes += value.length;
-                    globalBytes += value.length;
+                    updateGlobalBytes(value.length); 
                     speedTracker += value.length;
 
                     document.getElementById('counter').textContent = formatBytes(totalBytes);
-                    document.getElementById('totalCounter').textContent = formatBytes(globalBytes);
                 }
                 
                 await reader.cancel();
@@ -190,9 +198,9 @@
             Array.from({ length: threadCount }, () => consumeLoop());
         }
 
-        async function consumeLoop() {
+        async function consumeLoop() {  
             while (isRunning) {
-                await Promise.all(Array.from({ length: 4 }, consume));
+                await consume();
                 await new Promise(r => setTimeout(r, 500));
             }
         }
@@ -220,7 +228,7 @@
             <li>并发数建议值：4-32</li>
         </ul>
         <p style="color: #dc3545;">⚠️ 并发数过高可能会占用大量带宽</p>
-       <p>本项目 GitHub 仓库 https://github.com/zhengyang3552/traffic-consumption-device</P>
+       <p>本项目 GitHub 仓库 https://github.com/zhengyang3552/traffic-consumption-device</p>
     </div>
 </body>
 </html>
